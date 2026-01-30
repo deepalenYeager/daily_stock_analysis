@@ -173,6 +173,106 @@ class UnifiedRealtimeQuote:
         """检查是否有量价数据"""
         return self.volume_ratio is not None or self.turnover_rate is not None
 
+    def has_key_indicators(self) -> bool:
+        """
+        检查是否有关键指标（换手率、量比等核心量价指标）
+
+        用于判断数据是否完整，缺失关键指标时应尝试其他数据源补全
+
+        核心指标（至少需要2个）：
+        - turnover_rate: 换手率 - 量能分析必需
+        - volume_ratio: 量比 - 判断放量/缩量
+        - amplitude: 振幅 - 波动分析
+        """
+        core_indicators = [
+            self.turnover_rate is not None and self.turnover_rate > 0,
+            self.volume_ratio is not None and self.volume_ratio > 0,
+            self.amplitude is not None and self.amplitude > 0,
+        ]
+        # 至少有2个核心指标才算完整
+        return sum(core_indicators) >= 2
+
+    def get_missing_indicators(self) -> list:
+        """
+        获取缺失的关键指标列表
+
+        Returns:
+            缺失指标名称列表
+        """
+        missing = []
+
+        # 核心量价指标
+        if self.turnover_rate is None:
+            missing.append('turnover_rate')
+        if self.volume_ratio is None:
+            missing.append('volume_ratio')
+        if self.amplitude is None:
+            missing.append('amplitude')
+
+        # 估值指标
+        if self.pe_ratio is None:
+            missing.append('pe_ratio')
+        if self.pb_ratio is None:
+            missing.append('pb_ratio')
+
+        # 市值指标
+        if self.total_mv is None:
+            missing.append('total_mv')
+        if self.circ_mv is None:
+            missing.append('circ_mv')
+
+        # 趋势指标
+        if self.change_60d is None:
+            missing.append('change_60d')
+        if self.high_52w is None:
+            missing.append('high_52w')
+        if self.low_52w is None:
+            missing.append('low_52w')
+
+        return missing
+
+    def completeness_score(self) -> float:
+        """
+        计算数据完整度评分 (0-100)
+
+        Returns:
+            完整度百分比
+        """
+        total_indicators = 10  # 总共10个关键指标
+        missing_count = len(self.get_missing_indicators())
+        return round((total_indicators - missing_count) / total_indicators * 100, 1)
+
+    def merge_from(self, other: 'UnifiedRealtimeQuote') -> 'UnifiedRealtimeQuote':
+        """
+        从另一个 Quote 对象补全缺失字段
+
+        用于多数据源融合：主源数据为主，缺失字段从备用源补全
+
+        Args:
+            other: 另一个数据源的 Quote 对象
+
+        Returns:
+            合并后的 Quote 对象（返回自身）
+        """
+        if other is None:
+            return self
+
+        # 需要补全的字段列表
+        fields_to_merge = [
+            'turnover_rate', 'volume_ratio', 'amplitude',
+            'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
+            'change_60d', 'high_52w', 'low_52w'
+        ]
+
+        for field in fields_to_merge:
+            current_val = getattr(self, field, None)
+            other_val = getattr(other, field, None)
+            # 如果当前值为空且备用源有值，则补全
+            if current_val is None and other_val is not None:
+                setattr(self, field, other_val)
+
+        return self
+
 
 @dataclass
 class ChipDistribution:

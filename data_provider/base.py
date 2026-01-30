@@ -515,22 +515,109 @@ class DataFetcherManager:
                             break
                 
                 if quote is not None and quote.has_basic_data():
-                    logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
-                    return quote
-                    
+                    # 检查是否有关键指标（换手率等）
+                    if quote.has_key_indicators():
+                        logger.info(f"[实时行情] {stock_code} 成功获取完整数据 (来源: {source})")
+                        return quote
+                    else:
+                        # 数据不完整，尝试从其他源补全
+                        logger.info(f"[实时行情] {stock_code} 基本数据获取成功但缺少关键指标 (来源: {source})，尝试补全...")
+                        supplemented_quote = self._supplement_quote(stock_code, quote, source, source_priority)
+                        return supplemented_quote
+
             except Exception as e:
                 error_msg = f"[{source}] 失败: {str(e)}"
                 logger.warning(error_msg)
                 errors.append(error_msg)
                 continue
-        
+
         # 所有数据源都失败，返回 None（降级兜底）
         if errors:
             logger.warning(f"[实时行情] {stock_code} 所有数据源均失败，降级处理: {'; '.join(errors)}")
         else:
             logger.warning(f"[实时行情] {stock_code} 无可用数据源")
-        
+
         return None
+
+    def _supplement_quote(self, stock_code: str, primary_quote, primary_source: str, source_priority: list):
+        """
+        从其他数据源补全缺失的关键指标
+
+        策略：
+        1. 遍历优先级列表中 primary_source 之后的数据源
+        2. 尝试获取数据并合并缺失字段
+        3. 最多尝试 2 个备用源
+
+        Args:
+            stock_code: 股票代码
+            primary_quote: 主数据源的 Quote 对象
+            primary_source: 主数据源名称
+            source_priority: 数据源优先级列表
+
+        Returns:
+            合并后的 Quote 对象
+        """
+        # 找到主数据源在优先级列表中的位置
+        try:
+            primary_index = [s.strip().lower() for s in source_priority].index(primary_source)
+        except ValueError:
+            primary_index = -1
+
+        # 尝试从后续数据源补全
+        supplement_attempts = 0
+        max_attempts = 2
+
+        for i, source in enumerate(source_priority):
+            source = source.strip().lower()
+
+            # 跳过已尝试的数据源
+            if i <= primary_index:
+                continue
+
+            if supplement_attempts >= max_attempts:
+                break
+
+            supplement_attempts += 1
+
+            try:
+                supplement_quote = None
+
+                if source == "efinance":
+                    for fetcher in self._fetchers:
+                        if fetcher.name == "EfinanceFetcher":
+                            if hasattr(fetcher, 'get_realtime_quote'):
+                                supplement_quote = fetcher.get_realtime_quote(stock_code)
+                            break
+
+                elif source == "akshare_em":
+                    for fetcher in self._fetchers:
+                        if fetcher.name == "AkshareFetcher":
+                            if hasattr(fetcher, 'get_realtime_quote'):
+                                supplement_quote = fetcher.get_realtime_quote(stock_code, source="em")
+                            break
+
+                elif source in ("tencent", "akshare_qq"):
+                    for fetcher in self._fetchers:
+                        if fetcher.name == "AkshareFetcher":
+                            if hasattr(fetcher, 'get_realtime_quote'):
+                                supplement_quote = fetcher.get_realtime_quote(stock_code, source="tencent")
+                            break
+
+                # 如果备用源有数据且有关键指标，进行合并
+                if supplement_quote is not None and supplement_quote.has_key_indicators():
+                    primary_quote.merge_from(supplement_quote)
+                    logger.info(f"[实时行情] {stock_code} 成功从 {source} 补全关键指标 (换手率={primary_quote.turnover_rate}%)")
+                    break
+
+            except Exception as e:
+                logger.debug(f"[实时行情] {stock_code} 从 {source} 补全失败: {e}")
+                continue
+
+        # 无论是否补全成功，都返回主数据
+        if not primary_quote.has_key_indicators():
+            logger.warning(f"[实时行情] {stock_code} 无法补全关键指标，使用不完整数据")
+
+        return primary_quote
     
     def get_chip_distribution(self, stock_code: str):
         """
